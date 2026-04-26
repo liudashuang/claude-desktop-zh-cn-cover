@@ -9,6 +9,26 @@
 
 脚本会给 Claude 添加 `中文（中国）` 语言选项，并安装中文界面资源。
 
+## 双平台 10 秒快速开始
+
+### macOS
+
+1. 退出 Claude Desktop
+2. 双击 `install.command`
+3. 输入这台 Mac 的登录密码
+4. 打开 Claude，必要时手动切到 `Language -> 中文（中国）`
+
+### Windows
+
+1. 安装 Python 3
+2. 双击 `install_windows.bat`
+3. 如果提示找不到 Claude，就修改自动生成的 `patcher.config.json`
+4. 再跑一次；必要时也可以改用：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install_windows.ps1
+```
+
 ## Windows 30 秒快速开始
 
 如果你主要是给 Windows 版 Claude 汉化，直接按这个最短流程走：
