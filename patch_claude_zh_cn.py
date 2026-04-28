@@ -368,12 +368,12 @@ def patch_hardcoded_frontend_strings(app: Path) -> None:
     assets_dir = frontend_assets_dir(app)
     replacements = {
         ',children:"Clear filters"': ',children:"清除筛选"',
-        ',mt={today:"Today",yesterday:"Yesterday",this_week:"This week",older:"Older"};': ',mt={today:"今天",yesterday:"昨天",this_week:"本周",older:"更早"};',
         ',tooltip:"Search",tooltipKeyboardShortcut': ',tooltip:"搜索",tooltipKeyboardShortcut',
         ',tooltip:"Collapse sidebar"': ',tooltip:"折叠侧边栏"',
         'const l="Free space"': 'const l="剩余空间"',
         'label:"Environment",': 'label:"环境",',
         'label:"Last activity",': 'label:"最后活动",',
+        ',children:"Project"': ',children:"项目"',
         'label:"Group by",': 'label:"按组",',
         'label:"Status",': 'label:"状态",',
         ',i="Autocompact buffer"': ',i="自动压缩缓冲区"',
