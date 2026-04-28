@@ -367,6 +367,13 @@ def patch_language_whitelist(app: Path) -> Path:
 def patch_hardcoded_frontend_strings(app: Path) -> None:
     assets_dir = frontend_assets_dir(app)
     replacements = {
+        ',tooltip:"Search",tooltipKeyboardShortcut': ',tooltip:"搜索",tooltipKeyboardShortcut',
+        ',tooltip:"Collapse sidebar"': ',tooltip:"折叠侧边栏"',
+        'const l="Free space"': 'const l="剩余空间"',
+        ',i="Autocompact buffer"': ',i="自动压缩缓冲区"',
+        ',children:"New task"': ',children:"新建任务"',
+        ',placeholder:"Filter scheduled tasks"}': ',placeholder:"筛选计划任务"}',
+        'const ihn={nextRun:"Next run",name:"Name"}': 'const ihn={nextRun:"按下次运行",name:"按名称"}',
         ',label:"New session"': ',label:"新建会话"',
         'const He="New project",': 'const He="新项目",',
         ',placeholder:"Search projects"': ',placeholder:"搜索项目"',
@@ -378,7 +385,7 @@ def patch_hardcoded_frontend_strings(app: Path) -> None:
         ',{title:"Scheduled tasks",': ',{title:"计划任务",',
         'const ui={chat:"New chat",cowork:"New task",code:"New session",operon:"New session"}': 'const ui={chat:"新建对话",cowork:"新建任务",code:"新建会话",operon:"新建会话"}',
         ',children:"Pinned"': ',children:"已置顶"',
-        'const hi="Recents";': 'const hi="最近";',
+        'const hi="Recents";': 'const hi="最近使用";',
         ',label:"Projects"': ',label:"项目"',
         ',label:"Scheduled"': ',label:"计划任务"',
         ',label:"Customize"': ',label:"自定义"',
