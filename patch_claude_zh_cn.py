@@ -367,15 +367,25 @@ def patch_language_whitelist(app: Path) -> Path:
 def patch_hardcoded_frontend_strings(app: Path) -> None:
     assets_dir = frontend_assets_dir(app)
     replacements = {
-        '"New task"': '"新建任务"',
-        '"Projects"': '"项目"',
-        '"Scheduled"': '"计划任务"',
-        '"Customize"': '"自定义"',
+        ',label:"New session"': ',label:"新建会话"',
+        'const He="New project",': 'const He="新项目",',
+        ',placeholder:"Search projects"': ',placeholder:"搜索项目"',
+        ',as={recent:"Recent",created:"Created",alphabetical:"Alphabetical"};': ',as={recent:"按最近使用",created:"按创建时间",alphabetical:"按字母顺序"};',
+        '{title:"Projects",': '{title:"项目",',
+        ',message:"Scheduled tasks only run while your computer is awake.",': ',message:"计划任务仅在计算机处于唤醒状态时运行。",',
+        '}),"No scheduled tasks yet."]}': '}),"尚无计划任务。"]}',
+        ',children:"Run tasks on a schedule or whenever you need them. Type /schedule in any existing task to set one up."}': ',children:"按计划或在需要时运行任务。在任何现有任务中键入 /schedule 来设置一项。"}',
+        ',{title:"Scheduled tasks",': ',{title:"计划任务",',
+        'const ui={chat:"New chat",cowork:"New task",code:"New session",operon:"New session"}': 'const ui={chat:"新建对话",cowork:"新建任务",code:"新建会话",operon:"新建会话"}',
+        ',children:"Pinned"': ',children:"已置顶"',
+        'const hi="Recents";': 'const hi="最近";',
+        ',label:"Projects"': ',label:"项目"',
+        ',label:"Scheduled"': ',label:"计划任务"',
+        ',label:"Customize"': ',label:"自定义"',
+        ',name:"Customize"': ',name:"自定义"',
         '"Drag to pin"': '"拖到此处固定"',
         '"Drop here"': '"拖到此处"',
         '"Let go"': '"松开"',
-        '"Recents"': '"最近使用"',
-        '"View all"': '"查看全部"',
     }
     patched_files = 0
     patched_strings = 0
