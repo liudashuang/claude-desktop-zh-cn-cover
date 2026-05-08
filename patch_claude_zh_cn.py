@@ -477,7 +477,7 @@ def patch_hardcoded_frontend_strings(app: Path) -> None:
         '="New project",': '="新建项目",',
         ',placeholder:"Search projects"}': ',placeholder:"搜索项目"}',
         '={recent:"Recent",created:"Created",alphabetical:"Alphabetical"}': '={recent:"按最近使用",created:"按创建时间",alphabetical:"按字母顺序"}',
-        '[["alpha", "Alphabetically"], ["created", "Created time"], ["recency", "Recency"]]': '[["alpha", "按字母顺序"], ["created", "按创建时间"], ["recency", "按最近使用"]]',
+        '[["alpha","Alphabetically"],["created","Created time"],["recency","Recency"]]': '[["alpha","按字母顺序"],["created","按创建时间"],["recency","按最近使用"]]',
         ',children:"Clear filters"': ',children:"清除筛选"',
         ',tooltip:"Search",tooltipKeyboardShortcut': ',tooltip:"搜索",tooltipKeyboardShortcut',
         ',tooltip:"Collapse sidebar"': ',tooltip:"折叠侧边栏"',
@@ -753,9 +753,9 @@ def main() -> int:
         set_user_locale(user_home)
     verify(patched_app)
 
-    backup = backup_and_replace(app, patched_app, args.dry_run)
+    #backup = backup_and_replace(app, patched_app, args.dry_run)
     if not args.dry_run:
-        print(f"Backup kept at: {backup}")
+        #print(f"Backup kept at: {backup}")
         if args.launch:
             launch_claude(app)
 
