@@ -33,13 +33,9 @@ from typing import Any
 
 
 APP_DEFAULT = Path("/Applications/Claude.app")
-LANG_CODE = "zh-CN"
 ROOT = Path(__file__).resolve().parent.parent
 RESOURCES = ROOT / "resources"
-
-FRONTEND_TRANSLATION = RESOURCES / "frontend-zh-CN.json"
-DESKTOP_TRANSLATION = RESOURCES / "desktop-zh-CN.json"
-LOCALIZABLE_STRINGS = RESOURCES / "Localizable.strings"
+BACKUP_GLOB = "Claude.backup-before-zh-CN-*.app"
 
 APP_ASAR_REL = Path("Contents/Resources/app.asar")
 FRONTEND_I18N_REL = Path("Contents/Resources/ion-dist/i18n")
@@ -49,8 +45,24 @@ ASAR_PATCH_TARGET = ".vite/build/index.js"
 ASAR_INTEGRITY_BLOCK_SIZE = 4 * 1024 * 1024
 
 LANG_LIST_RE = re.compile(
-    r'\["en-US","de-DE","fr-FR","ko-KR","ja-JP","es-419","es-ES","it-IT","hi-IN","pt-BR","id-ID"(.*?)\]'
+    r'\["en-US","de-DE","fr-FR","ko-KR","ja-JP","es-419","es-ES","it-IT","hi-IN","pt-BR","id-ID"(?:(?:,"zh-CN"))*\]'
 )
+BASE_LANGUAGE_LIST = '["en-US","de-DE","fr-FR","ko-KR","ja-JP","es-419","es-ES","it-IT","hi-IN","pt-BR","id-ID"'
+
+
+def get_language_config(lang_code: str) -> dict[str, Any]:
+    """Return file paths and settings for the given language code."""
+    return {
+        "lang_code": lang_code,
+        "frontend_translation": RESOURCES / f"frontend-{lang_code}.json",
+        "frontend_hardcoded": RESOURCES / f"frontend-hardcoded-{lang_code}.json",
+        "desktop_translation": RESOURCES / f"desktop-{lang_code}.json",
+        "localizable_strings": RESOURCES / f"Localizable-{lang_code}.strings" if (RESOURCES / f"Localizable-{lang_code}.strings").exists() else RESOURCES / "Localizable.strings",
+        "statsig_translation": RESOURCES / f"statsig-{lang_code}.json",
+        "label": {
+            "zh-CN": "简体中文",
+        }.get(lang_code, lang_code),
+    }
 
 
 def run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -116,20 +128,22 @@ def copy_app(src: Path, dst: Path) -> None:
     run(["ditto", str(src), str(dst)])
 
 
-def patch_language_whitelist(app: Path) -> Path:
+def patch_language_whitelist(app: Path, lang_code: str) -> Path:
     assets_dir = app / FRONTEND_ASSETS_REL
     candidates = sorted(assets_dir.glob("index-*.js"))
     if not candidates:
         raise SystemExit(f"Cannot find frontend index bundle in {assets_dir}")
 
+    replacement = f'{BASE_LANGUAGE_LIST},"{lang_code}"]'
+
     for path in candidates:
         text = path.read_text(encoding="utf-8")
-        if '"zh-CN"' in text:
-            print(f"Language whitelist already contains zh-CN: {path.name}")
+        if replacement in text:
+            print(f"Language whitelist already contains {lang_code}: {path.name}")
             return path
         if LANG_LIST_RE.search(text):
             patched = LANG_LIST_RE.sub(
-                '["en-US","de-DE","fr-FR","ko-KR","ja-JP","es-419","es-ES","it-IT","hi-IN","pt-BR","id-ID","zh-CN"]',
+                replacement,
                 text,
                 count=1,
             )
@@ -140,9 +154,71 @@ def patch_language_whitelist(app: Path) -> Path:
     raise SystemExit("Could not patch language whitelist. Claude's bundle format may have changed.")
 
 
-def patch_hardcoded_frontend_strings(app: Path) -> None:
+def patch_language_display_names(app: Path) -> None:
+    assets_dir = app / FRONTEND_ASSETS_REL
+    candidates = sorted(assets_dir.glob("index-*.js"))
+    if not candidates:
+        raise SystemExit(f"Cannot find frontend index bundle in {assets_dir}")
+
+    marker = "__claudeZhLabelPatch"
+    patch = ';(()=>{const e=Intl.DisplayNames&&Intl.DisplayNames.prototype;if(!e||e.__claudeZhLabelPatch)return;const n=e.of;e.of=function(e){const t=String(e);return t==="zh-CN"?"简体中文":n.call(this,e)},Object.defineProperty(e,"__claudeZhLabelPatch",{value:!0})})();'
+    for path in candidates:
+        text = path.read_text(encoding="utf-8")
+        if marker in text:
+            print(f"Language display names already patched: {path.name}")
+            continue
+        path.write_text(text + patch, encoding="utf-8")
+        print(f"Patched language display names: {path.name}")
+
+
+def load_frontend_hardcoded_replacements(lang_code: str) -> list[tuple[str, str]]:
+    path = get_language_config(lang_code)["frontend_hardcoded"]
+    require_file(path)
+    data = load_json(path)
+    if not isinstance(data, list):
+        raise SystemExit(f"Unsupported hardcoded frontend replacement JSON shape: {path}")
+
+    replacements: list[tuple[str, str]] = []
+    for item in data:
+        if not (
+            isinstance(item, list)
+            and len(item) == 2
+            and isinstance(item[0], str)
+            and isinstance(item[1], str)
+        ):
+            raise SystemExit(f"Invalid hardcoded frontend replacement entry in {path}: {item!r}")
+        replacements.append((item[0], item[1]))
+    return replacements
+
+
+def patch_hardcoded_frontend_strings(app: Path, lang_code: str) -> None:
     assets_dir = app / FRONTEND_ASSETS_REL
     replacements = {
+        ',Ca="Local",Sa="Cloud",Oa="Remote Control",': ',Ca="本地",Sa="云端",Oa="远程空",',
+
+        '"Shown in the model picker. Leave blank to auto-format from the ID."': '"显示在型号选择器中。留空则可根据 ID 自动格式化。"',
+        'label:"Display name"': 'label:"显示名称"',
+        '"How the gateway credential is sent. Choose Bearer or x-api-key for a static key or credential-helper output; choose SSO to have each user sign in via your identity provider."': '"网关凭证的发送方式。选择 Bearer 或 x-api-key 可输出静态密钥或凭证助手；选择 SSO 可让每个用户通过您的身份提供商登录。"',
+        '"Optional HTTPS URL. The banner text becomes a link when set."': '"可选的 HTTPS URL。设置后，横幅文本将变为链接。"',
+        '"Six-digit hex (#RRGGBB). Applied exactly as configured; not theme-adapted."': '"六位十六进制代码（#RRGGBB）。完全按照配置应用；未进行主题适配。"',
+        '"Link URL"': '"链接地址"',
+        '"Text color"': '"文本颜色"',
+        '"Background color"': '"背景颜色"',
+        '"Internal use only"': '"仅供内部使用"',
+        '"Single line, truncated on overflow. Maximum 200 characters."': '"单行显示，溢出时截断。最多 200 个字符。"',
+        '"Banner text"': '"横幅文字"',
+        '"Show banner"': '"显示横幅"',
+        '"A persistent banner across the top of the app window after sign-in."': '"登录后，应用窗口顶部会一直显示一个横幅。"',
+        'title:"Organization banner"': 'title:"组织横幅"',
+        'group:"Organization banner"': 'group:"组织横幅"',
+        '"Display instructions, policies, or notices as a persistent strip across the top of the app window."': '"在应用程序窗口顶部以常驻条带的形式显示说明、政策或通知。"',
+        'title:"Appearance"': 'title:"外貌"',
+        '"Security and compatibility fixes will not install automatically. Make sure IT has another distribution path."': '"安全性和兼容性修复程序不会自动安装。请确保 IT 部门有其他分发途径。"',
+        '"Org-pushed MCP servers — remote (HTTP/SSE) or local (stdio command). May embed bearer tokens."': '"组织推送的 MCP 服务器——远程（HTTP/SSE）或本地（stdio 命令）。可能嵌入持有者令牌。"',
+        '"Disable claude:// deep-link handling"': '"禁用 claude:// 深度链接处理"',
+        '"Stop external apps and websites from opening Cowork via claude:// links."': '"阻止外部应用程序和网站通过 claude:// 链接打开 Cowork。"',
+        'expected a gateway model route referencing an Anthropic model (e.g. claude-sonnet-4-5, anthropic/claude-*). Name routes to match the underlying model.': '预期网关模型路由引用 Anthropic 模型（例如 claude-sonnet-4-5、anthropic/claude-*）。路由名称应与底层模型匹配。',
+        'Doesn\'t look like an Anthropic model — ${n.reason}': '看起来不像 Anthropico 的型号——${n.reason}',
         '"Sent on every inference and `/v1/models` discovery request (joined into the CLI\'s `ANTHROPIC_CUSTOM_HEADERS`).\\n\\nUse this for fleet-wide constants. For per-user or per-session values, have the **credential helper script** emit JSON with a `headers` field — those are merged over these static entries (helper wins on conflict)."': '"每次推理和 `/v1/models` 发现请求都会发送此信息（已添加到 CLI 的 `ANTHROPIC_CUSTOM_HEADERS` 中）。\\n\\n此信息用于全局常量。对于每个用户或每个会话的值，请让**凭证辅助脚本**生成带有 `headers` 字段的 JSON——这些值会与这些静态条目合并（冲突时以辅助脚本的值为准）。"',
 
         '\'Claude runs the executable with no arguments and reads **stdout** (trimmed). Exit code must be `0`; any output on **stderr** is logged but ignored. **Stdout must be the credential only** — no banners, prompts, or log lines.\\n\\n**Output format** — either:\\n- a single bare token (the API key / bearer token), or\\n- a JSON object `{"token": "...", "headers": {"Name": "Value", ...}}` when per-request headers are needed (gateway provider only; merged over **Gateway extra headers**, helper wins on conflict)\\n\\nResult is cached for the TTL below. On TTL expiry the helper is re-invoked transparently — no user prompt, no relaunch.\\n\\n**Typical use:** a shell script that pulls from Keychain, 1Password CLI, or an internal secret broker. Example:\\n\\n`security find-generic-password -s anthropic-api -w`\\n\\nIf this field is set, static credential fields (API key, bearer token) are ignored. The helper always wins.\'': '\'Claude 运行该可执行文件时不带任何参数，并读取 **stdout**（已精简）。退出代码必须为 `0`；**stderr** 上的任何输出都会被记录但会被忽略。**stdout 必须仅包含凭据**——不包含横幅、提示或日志行。\\n\\n**输出格式**——可以是：\\n- 单个裸令牌（API 密钥/持有者令牌），或者\\n- 当需要每个请求的标头时，可以使用 JSON 对象 `{"token": "...", "headers": {"Name": "Value", ...}}`（仅限网关提供商；会与 **网关额外标头** 合并，冲突时辅助程序优先）\\n\\n结果会缓存以下 TTL 值。TTL 到期后，辅助程序会透明地重新调用——无需用户提示，也无需重新启动。\\n\\n**典型用途：** 从 Keychain、1Password CLI 或内部密钥代理拉取凭据的 shell 脚本。示例：\\n\\n`security find-generic-password -s anthropic-api -w`\\n\\n如果设置了此字段，则会忽略静态凭据字段（API 密钥、持有者令牌）。辅助方法始终优先。\'',
@@ -199,7 +275,7 @@ def patch_hardcoded_frontend_strings(app: Path) -> None:
         '"Allowed workspace folders"': '"允许的工作区文件夹"',
         '"Built-in tools removed from Cowork."': '"Cowork 中已移除内置工具。"',
         '"Disabled built-in tools"': '"已禁用内置工具"',
-        '"Domains Cowork\'s tools may reach during a turn. Also surfaced under Egress Requirements."': '"Cowork 工具在一次回合中可访问的域名。也会显示在“出站要求”中。"',
+        '"Domains Cowork\'s tools may reach during a turn. Also surfaced under Egress Requirements."': '"Cowork 的工具在回合期间可能触及的领域。也出现在“出口要求”下。"',
         '"Show the Code tab (terminal-based coding sessions). Sessions run on the host, not inside the VM."': '"显示“代码”选项卡（基于终端的编码会话）。会话在主机上运行，而不是在虚拟机内部运行。"',
         '"Allowed egress hosts"': '"允许的出口主机"',
         '"Allow Claude Code tab"': '"允许 Claude 代码选项卡"',
@@ -219,7 +295,7 @@ def patch_hardcoded_frontend_strings(app: Path) -> None:
         '"Gateway auth scheme"': '"网关认证方案"',
         '"Gateway extra headers"': '"网关额外标头"',
         '"Full URL of the inference gateway endpoint."': '"推理网关端点的完整URL。"',
-        ',title:"Gateway base URL"': ',title:"网关基础 URL"',
+        ',title:"Gateway base URL"': ',title:"网关URL"',
 
         '"Extra headers sent to the gateway. One value per header name. For tenant routing, org IDs, etc."': '"发送到网关的额外标头。每个标头名称对应一个值。用于租户路由、组织 ID 等。"',
         '"Hide Anthropic sign-in"': '"隐藏 Anthropic 登录"',
@@ -230,7 +306,7 @@ def patch_hardcoded_frontend_strings(app: Path) -> None:
         '{title:"Sandbox & workspace"}':'{title:"沙盒和工作区"}',
         '{title:"Connectors & extensions"}':'{title:"连接器和扩展"}',
         ':{title:"Telemetry & updates",':':{title:"遥测和更新",',
-        '{title:"Egress Requirements",':'{title:"出站要求",',
+        '{title:"Egress Requirements",':'{title:"出口要求",',
         '{title:"Usage limits"}':'{title:"使用限制"}',
         '{title:"Plugins & skills",':'{title:"插件和技能",',
         'Plugins and skills aren\'t set in this configuration. Mount plugin bundles to the folder below using your device-management tool and Cowork will load them at launch.':'此配置中未设置插件和技能。请使用设备管理工具将插件包挂载到以下文件夹，Cowork 将在启动时加载它们。',
@@ -238,7 +314,6 @@ def patch_hardcoded_frontend_strings(app: Path) -> None:
         '"Hosts your network firewall must allow, derived from your current settings. This list is read-only and updates as you make changes. Traffic is HTTPS on port 443 unless a custom port is specified (OTLP, gateway, or MCP server URLs)."':'"此列表包含您的网络防火墙必须允许的主机，其值取决于您当前的设置。此列表为只读，会随着您的更改而更新。除非指定自定义端口（例如 OTLP、网关或 MCP 服务器 URL），否则流量将通过 443 端口上的 HTTPS 协议传输。"',
         'e.length?"All"': 'e.length?"全部"',
         ',["0","All"]]': ',["0","全部"]]',
-        ',Al="Local",Dl="Cloud",El="Remote Control",zl="All"': ',Al="本地",Dl="云端",El="远程控制",zl="全部"',
         'children:"All projects"': 'children:"所有项目"',
         '[["active","Active"],["archived","Archived"],["all","All"]]': '[["active","活跃"],["archived","已存档"],["all","全部"]]',
         '[["date","Date"]': '[["date","日期"]',
@@ -246,6 +321,7 @@ def patch_hardcoded_frontend_strings(app: Path) -> None:
         '["none","None"]]': '["none","无"]]',
         '[["project","Project"]]': '[["project","项目"]]',
         '[["environment","Environment"]]': '[["environment","环境"]]',
+        '[["custom","Custom groups"]]': '[["custom","自定义组"]]',
         'label:"Sort by",': 'label:"排序方式",',
         '{title:"Projects",': '{title:"项目",',
         '="New project",': '="新建项目",',
@@ -268,9 +344,9 @@ def patch_hardcoded_frontend_strings(app: Path) -> None:
         '}),"No scheduled tasks yet."]}': '}),"尚无计划任务。"]}',
         ',children:"Run tasks on a schedule or whenever you need them. Type /schedule in any existing task to set one up."}': ',children:"按计划或在需要时运行任务。在任何现有任务中键入 /schedule 来设置一项。"}',
         ',{title:"Scheduled tasks",': ',{title:"计划任务",',
-        'const Ql={chat:"New chat",cowork:"New task",code:"New session",operon:"New session",home:"New"}': 'const Ql={chat:"新建对话",cowork:"新建任务",code:"新建会话",operon:"新建会话",home:"New"}',
+        '={chat:"New chat",cowork:"New task",code:"New session"}': '={chat:"新建对话",cowork:"新建任务",code:"新建会话"}',
         ',children:"Pinned"': ',children:"已置顶"',
-        'const Jl="Recents"': 'const Jl="最近使用"',
+        '="Recents",': '="最近使用",',
         ',label:"Projects"': ',label:"项目"',
         ',label:"Scheduled"': ',label:"计划任务"',
         ',label:"Customize"': ',label:"自定义"',
@@ -279,6 +355,7 @@ def patch_hardcoded_frontend_strings(app: Path) -> None:
         '"Drop here"': '"拖到此处"',
         '"Let go"': '"松开"',
     }
+    replacement_items = list(replacements.items()) + load_frontend_hardcoded_replacements(lang_code)
     patched_files = 0
     patched_strings = 0
 
@@ -286,7 +363,7 @@ def patch_hardcoded_frontend_strings(app: Path) -> None:
         text = path.read_text(encoding="utf-8")
         patched = text
         count = 0
-        for source, target in replacements.items():
+        for source, target in replacement_items:
             occurrences = patched.count(source)
             if occurrences:
                 patched = patched.replace(source, target)
@@ -373,6 +450,68 @@ def calculate_file_integrity(data: bytes) -> dict[str, Any]:
     }
 
 
+def find_custom3p_validation_toggle(content: bytes, expr: bytes) -> re.Match[bytes] | None:
+    pattern = re.compile(
+        rb"const ([A-Za-z_$][A-Za-z0-9_$]*)="
+        + re.escape(expr)
+        + rb"\|\|!1,([A-Za-z_$][A-Za-z0-9_$]*)="
+    )
+    matches: list[re.Match[bytes]] = []
+    for match in pattern.finditer(content):
+        flag_name = match.group(1)
+        validation_window = content[match.start() : match.start() + 2500]
+        if (
+            b"if(!" + flag_name + b")return{ok:!0}" in validation_window
+            and b"expected a gateway model route referencing an Anthropic model" in validation_window
+            and b"Bedrock model" in validation_window
+        ):
+            matches.append(match)
+
+    if len(matches) > 1:
+        raise SystemExit("Could not patch custom 3P model validation: multiple matching toggles found.")
+    return matches[0] if matches else None
+
+
+def find_custom3p_name_validator(content: bytes, *, patched: bool) -> re.Match[bytes] | None:
+    pattern = re.compile(
+        rb"function ([A-Za-z_$][A-Za-z0-9_$]*)\(([A-Za-z_$][A-Za-z0-9_$]*)\)"
+        rb"\{const ([A-Za-z_$][A-Za-z0-9_$]*)=\2\.toLowerCase\(\);return ([^{};]+)\}"
+    )
+    matches: list[re.Match[bytes]] = []
+    for match in pattern.finditer(content):
+        expr = match.group(4).strip()
+        validation_window = content[max(0, match.start() - 1500) : match.start() + 3000]
+        if (
+            b"deepseek" in validation_window
+            and b"expected a gateway model route referencing an Anthropic model" in validation_window
+        ):
+            if patched and expr == b"!0":
+                matches.append(match)
+            elif (
+                not patched
+                and b".test(" in match.group(4)
+                and b".some(" in match.group(4)
+                and b".includes(" in match.group(4)
+            ):
+                matches.append(match)
+
+    if len(matches) > 1:
+        raise SystemExit("Could not patch custom 3P model validation: multiple matching validators found.")
+    return matches[0] if matches else None
+
+
+def patch_custom3p_name_validator(content: bytes) -> bytes | None:
+    match = find_custom3p_name_validator(content, patched=False)
+    if match is None:
+        return None
+
+    expr = match.group(4)
+    replacement = b"!0" + b" " * (len(expr) - len(b"!0"))
+    if len(expr) != len(replacement):
+        raise SystemExit("Internal patch error: custom 3P validator replacement changed length.")
+    return content[: match.start(4)] + replacement + content[match.end(4) :]
+
+
 def update_electron_asar_integrity(app: Path, header_string: str) -> None:
     info_plist = app / "Contents/Info.plist"
     require_file(info_plist)
@@ -400,10 +539,6 @@ def patch_custom3p_model_validation(app: Path) -> None:
     old_expr = b'process.env.NODE_ENV!=="production"'
     new_expr = b"false"
     replacement = new_expr + b" " * (len(old_expr) - len(new_expr))
-    anchor = b"const Hte=" + old_expr + b"||!1,eRt="
-    patched = b"const Hte=" + replacement + b"||!1,eRt="
-    if len(anchor) != len(patched):
-        raise SystemExit("Internal patch error: custom 3P validation replacement changed length.")
 
     data = bytearray(path.read_bytes())
     header_size, _header_string, header = read_asar_header(data, path)
@@ -415,13 +550,35 @@ def patch_custom3p_model_validation(app: Path) -> None:
         raise SystemExit(f"Unsupported app.asar file bounds for {ASAR_PATCH_TARGET}.")
 
     content = bytes(data[content_offset:content_end])
-    count = content.count(anchor)
-    if count != 1:
-        raise SystemExit(
-            "Could not patch custom 3P model validation. Claude bundle format may have changed."
+    match = find_custom3p_validation_toggle(content, old_expr)
+    if match is None:
+        patched_match = find_custom3p_validation_toggle(content, replacement)
+        if patched_match is not None:
+            print("Custom 3P model-name validation already patched in app.asar")
+            return
+        if find_custom3p_name_validator(content, patched=True) is not None:
+            print("Custom 3P model-name validation already patched in app.asar")
+            return
+        patched_content = patch_custom3p_name_validator(content)
+        if patched_content is None:
+            raise SystemExit(
+                "Could not patch custom 3P model validation. Claude bundle format may have changed."
+            )
+    else:
+        anchor = match.group(0)
+        patched = (
+            b"const "
+            + match.group(1)
+            + b"="
+            + replacement
+            + b"||!1,"
+            + match.group(2)
+            + b"="
         )
+        if len(anchor) != len(patched):
+            raise SystemExit("Internal patch error: custom 3P validation replacement changed length.")
+        patched_content = content[: match.start()] + patched + content[match.end() :]
 
-    patched_content = content.replace(anchor, patched, 1)
     if len(patched_content) != len(content):
         raise SystemExit("Internal patch error: app.asar length changed during custom 3P patch.")
     data[content_offset:content_end] = patched_content
@@ -436,14 +593,73 @@ def patch_custom3p_model_validation(app: Path) -> None:
     print("Patched custom 3P model-name validation in app.asar")
 
 
-def merge_frontend_locale(app: Path) -> tuple[int, int, int]:
+def pad_utf8_replacement(source: str, target: str) -> str:
+    source_len = len(source.encode("utf-8"))
+    target_len = len(target.encode("utf-8"))
+    if target_len > source_len:
+        raise SystemExit(f"Internal patch error: replacement is longer than source: {source}")
+    return target + (" " * (source_len - target_len))
+
+
+def patch_hardcoded_main_process_menu_labels(app: Path) -> None:
+    path = app / APP_ASAR_REL
+    require_file(path)
+
+    replacements = {
+        "Enable Main Process Debugger": "启用主进程调试器",
+        "Record Performance Trace": "记录性能跟踪",
+        "Write Main Process Heap Snapshot": "写入主进程堆快照",
+        "Record Memory Trace (auto-stop)": "记录内存跟踪 (自动)",
+    }
+
+    data = bytearray(path.read_bytes())
+    header_size, _header_string, header = read_asar_header(data, path)
+    entry = get_asar_file_entry(header, ASAR_PATCH_TARGET)
+    content_offset = 8 + header_size + int(entry["offset"])
+    content_size = int(entry["size"])
+    content_end = content_offset + content_size
+    if content_offset < 0 or content_end > len(data):
+        raise SystemExit(f"Unsupported app.asar file bounds for {ASAR_PATCH_TARGET}.")
+
+    content = bytes(data[content_offset:content_end])
+    text = content.decode("utf-8")
+    patched = text
+    count = 0
+    for source, target in replacements.items():
+        if target in patched:
+            continue
+        if source in patched:
+            patched = patched.replace(source, pad_utf8_replacement(source, target))
+            count += 1
+
+    if count == 0:
+        print("Hardcoded main-process menu labels already patched")
+        return
+
+    patched_content = patched.encode("utf-8")
+    if len(patched_content) != len(content):
+        raise SystemExit("Internal patch error: menu label replacement changed bundle size.")
+
+    data[content_offset:content_end] = patched_content
+    entry["integrity"] = calculate_file_integrity(patched_content)
+    updated_header_string = json.dumps(header, ensure_ascii=False, separators=(",", ":"))
+    updated_header = encode_asar_header(updated_header_string, header_size)
+    data[: len(updated_header)] = updated_header
+
+    path.write_bytes(data)
+    update_electron_asar_integrity(app, updated_header_string)
+    print(f"Patched hardcoded main-process menu labels: {count} replacements")
+
+
+def merge_frontend_locale(app: Path, lang_code: str) -> tuple[int, int, int]:
+    config = get_language_config(lang_code)
     source = app / FRONTEND_I18N_REL / "en-US.json"
-    target = app / FRONTEND_I18N_REL / "zh-CN.json"
+    target = app / FRONTEND_I18N_REL / f"{lang_code}.json"
     require_file(source)
-    require_file(FRONTEND_TRANSLATION)
+    require_file(config["frontend_translation"])
 
     en = load_json(source)
-    zh_pack = load_json(FRONTEND_TRANSLATION)
+    zh_pack = load_json(config["frontend_translation"])
     if not isinstance(en, dict) or not isinstance(zh_pack, dict):
         raise SystemExit("Unsupported frontend i18n JSON shape.")
 
@@ -461,39 +677,43 @@ def merge_frontend_locale(app: Path) -> tuple[int, int, int]:
 
     save_json(target, merged)
     extra = len(set(zh_pack) - set(en))
-    print(f"Installed frontend zh-CN: {translated} translated, {fallback} fallback, {extra} extra old keys ignored")
+    print(f"Installed frontend {lang_code}: {translated} translated, {fallback} fallback, {extra} extra old keys ignored")
     return translated, fallback, extra
 
 
-def install_desktop_locale(app: Path) -> None:
+def install_desktop_locale(app: Path, lang_code: str) -> None:
+    config = get_language_config(lang_code)
     resources_dir = app / DESKTOP_RESOURCES_REL
-    require_file(DESKTOP_TRANSLATION)
-    require_file(LOCALIZABLE_STRINGS)
+    require_file(config["desktop_translation"])
+    require_file(config["localizable_strings"])
 
-    shutil.copy2(DESKTOP_TRANSLATION, resources_dir / "zh-CN.json")
-    for folder in ["zh-CN.lproj", "zh_CN.lproj"]:
+    shutil.copy2(config["desktop_translation"], resources_dir / f"{lang_code}.json")
+    for folder in [f"{lang_code}.lproj", f"{lang_code.replace('-', '_')}.lproj"]:
         out_dir = resources_dir / folder
         out_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(LOCALIZABLE_STRINGS, out_dir / "Localizable.strings")
-    print("Installed desktop shell zh-CN resources")
+        shutil.copy2(config["localizable_strings"], out_dir / "Localizable.strings")
+    print(f"Installed desktop shell {lang_code} resources")
 
 
-def install_statsig_locale(app: Path) -> None:
+def install_statsig_locale(app: Path, lang_code: str) -> None:
+    config = get_language_config(lang_code)
     statsig_dir = app / FRONTEND_I18N_REL / "statsig"
     if not statsig_dir.exists():
         return
-    target = statsig_dir / "zh-CN.json"
-    bundled = RESOURCES / "statsig-zh-CN.json"
+    target = statsig_dir / f"{lang_code}.json"
+    bundled = config["statsig_translation"]
     if bundled.exists():
         shutil.copy2(bundled, target)
     elif (statsig_dir / "en-US.json").exists():
         shutil.copy2(statsig_dir / "en-US.json", target)
-    print("Installed statsig zh-CN resource")
+    print(f"Installed statsig {lang_code} resource")
 
 
 def sign_path(path: Path, entitlements_dir: Path) -> None:
     entitlements = load_entitlements(path)
     if entitlements:
+        entitlements.pop("com.apple.application-identifier", None)
+        entitlements.pop("com.apple.developer.team-identifier", None)
         # Ad-hoc signatures do not have a real Team ID. Under hardened runtime,
         # Electron's main process otherwise fails library validation when it loads
         # bundled frameworks, even when the whole bundle is signed consistently.
@@ -560,7 +780,7 @@ def clear_quarantine(app: Path) -> None:
         print("Cleared Gatekeeper quarantine attribute")
 
 
-def set_user_locale(user_home: Path) -> None:
+def set_user_locale(user_home: Path, lang_code: str) -> None:
     config = user_home / "Library/Application Support/Claude/config.json"
     config.parent.mkdir(parents=True, exist_ok=True)
     data: dict[str, Any] = {}
@@ -571,7 +791,7 @@ def set_user_locale(user_home: Path) -> None:
             backup = config.with_suffix(".json.bak-invalid")
             shutil.copy2(config, backup)
             print(f"Existing config was not valid JSON; backed up to {backup}")
-    data["locale"] = LANG_CODE
+    data["locale"] = lang_code
     save_json(config, data)
 
     sudo_uid = os.environ.get("SUDO_UID")
@@ -596,12 +816,62 @@ def backup_and_replace(original: Path, patched: Path, dry_run: bool) -> Path:
     return backup
 
 
-def verify(app: Path) -> None:
-    frontend = app / FRONTEND_I18N_REL / "zh-CN.json"
+def remove_path(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def find_app_backups(app: Path) -> list[Path]:
+    return sorted(path for path in app.parent.glob(BACKUP_GLOB) if path.is_dir())
+
+
+def restore_oldest_backup(app: Path, dry_run: bool) -> Path:
+    backups = find_app_backups(app)
+    if not backups:
+        raise SystemExit(f"No Claude backup found in {app.parent}: {BACKUP_GLOB}")
+
+    backup = backups[0]
+    extra_backups = backups[1:]
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    current_tmp = app.with_name(f"Claude.restore-current-{stamp}.app")
+
+    if dry_run:
+        if app.exists():
+            print(f"[dry-run] Would move current app {app} -> {current_tmp}")
+        print(f"[dry-run] Would restore oldest backup {backup} -> {app}")
+        for extra_backup in extra_backups:
+            print(f"[dry-run] Would delete extra backup: {extra_backup}")
+        return backup
+
+    if app.exists():
+        print(f"Moving current app aside: {current_tmp}")
+        shutil.move(str(app), str(current_tmp))
+
+    try:
+        print(f"Restoring oldest backup: {backup}")
+        shutil.move(str(backup), str(app))
+    except Exception:
+        if current_tmp.exists() and not app.exists():
+            shutil.move(str(current_tmp), str(app))
+        raise
+
+    if current_tmp.exists():
+        print(f"Removing replaced app: {current_tmp}")
+        remove_path(current_tmp)
+    for extra_backup in extra_backups:
+        print(f"Deleting extra backup: {extra_backup}")
+        remove_path(extra_backup)
+    return backup
+
+
+def verify(app: Path, lang_code: str) -> None:
+    frontend = app / FRONTEND_I18N_REL / f"{lang_code}.json"
     data = load_json(frontend)
     values = [v for v in data.values() if isinstance(v, str)]
     chinese = sum(1 for v in values if re.search(r"[\u4e00-\u9fff]", v))
-    print(f"Verified frontend zh-CN JSON: {chinese}/{len(values)} strings contain Chinese")
+    print(f"Verified frontend {lang_code} JSON: {chinese}/{len(values)} strings contain Chinese")
 
     verify_result = run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app)], check=False)
     if verify_result.returncode == 0:
@@ -623,48 +893,73 @@ def verify(app: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Patch Claude Desktop with zh-CN language resources.")
+    parser = argparse.ArgumentParser(description="Patch Claude Desktop with Chinese language resources.")
     parser.add_argument("--app", type=Path, default=APP_DEFAULT, help="Path to Claude.app")
     parser.add_argument("--user-home", type=Path, default=Path.home(), help="Home directory whose Claude config should be updated")
+    parser.add_argument("--lang", choices=["zh-CN"], default="zh-CN", help="Language code to install (default: zh-CN)")
     parser.add_argument("--dry-run", action="store_true", help="Prepare and verify a patched temp app, but do not replace /Applications/Claude.app")
     parser.add_argument("--launch", action="store_true", help="Launch Claude after installation")
+    parser.add_argument("--restore", action="store_true", help="Restore the oldest macOS app backup and delete other backups")
     args = parser.parse_args()
-
-    require_file(FRONTEND_TRANSLATION)
-    require_file(DESKTOP_TRANSLATION)
-    require_file(LOCALIZABLE_STRINGS)
-    if not args.app.exists():
-        raise SystemExit(f"Claude.app not found: {args.app}")
-    require_virtualization_entitlement(args.app)
 
     try:
         in_applications = args.app.resolve().as_posix().startswith("/Applications/")
     except Exception:
         in_applications = str(args.app).startswith("/Applications/")
-    if os.geteuid() != 0 and in_applications:
+    if os.geteuid() != 0 and in_applications and not args.dry_run:
         print("This usually needs sudo because /Applications is protected.", file=sys.stderr)
+
+    if args.restore:
+        if args.dry_run:
+            print("[dry-run] Claude will not be quit.")
+        else:
+            quit_claude()
+        restored = restore_oldest_backup(args.app, args.dry_run)
+        if args.dry_run:
+            print(f"[dry-run] Would set Claude config locale under: {args.user_home} to en-US")
+        else:
+            set_user_locale(args.user_home, "en-US")
+            print(f"Restored from backup: {restored}")
+            if args.launch:
+                run(["open", "-a", str(args.app)], check=False)
+        print("Done. Claude Desktop has been restored to the oldest backup.")
+        return 0
+
+    lang_code = args.lang
+    config = get_language_config(lang_code)
+    label = config["label"]
+
+    require_file(config["frontend_translation"])
+    require_file(config["frontend_hardcoded"])
+    require_file(config["desktop_translation"])
+    require_file(config["localizable_strings"])
+    if not args.app.exists():
+        raise SystemExit(f"Claude.app not found: {args.app}")
+    require_virtualization_entitlement(args.app)
 
     if args.dry_run:
         print("[dry-run] Claude will not be quit.")
     else:
         quit_claude()
-    tmp_root = Path(tempfile.mkdtemp(prefix="claude-zh-cn-patch."))
+    tmp_root = Path(tempfile.mkdtemp(prefix=f"claude-{lang_code}-patch."))
     patched_app = tmp_root / "Claude.app"
 
     copy_app(args.app, patched_app)
-    patch_language_whitelist(patched_app)
-    patch_hardcoded_frontend_strings(patched_app)
+    patch_language_whitelist(patched_app, lang_code)
+    patch_hardcoded_frontend_strings(patched_app, lang_code)
+    patch_language_display_names(patched_app)
+    patch_hardcoded_main_process_menu_labels(patched_app)
     patch_custom3p_model_validation(patched_app)
-    merge_frontend_locale(patched_app)
-    install_desktop_locale(patched_app)
-    install_statsig_locale(patched_app)
+    merge_frontend_locale(patched_app, lang_code)
+    install_desktop_locale(patched_app, lang_code)
+    install_statsig_locale(patched_app, lang_code)
     resign_app(patched_app)
     clear_quarantine(patched_app)
     if args.dry_run:
         print(f"[dry-run] Would set Claude config locale under: {args.user_home}")
     else:
-        set_user_locale(args.user_home)
-    verify(patched_app)
+        set_user_locale(args.user_home, lang_code)
+    verify(patched_app, lang_code)
 
     backup = backup_and_replace(args.app, patched_app, args.dry_run)
     if not args.dry_run:
@@ -672,7 +967,7 @@ def main() -> int:
         if args.launch:
             run(["open", "-a", str(args.app)], check=False)
 
-    print("Done. Select Language -> 中文（中国） in Claude if it is not already selected.")
+    print(f"Done. Select Language -> {label} in Claude if it is not already selected.")
     return 0
 
 
